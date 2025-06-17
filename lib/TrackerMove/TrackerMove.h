@@ -2,6 +2,7 @@
 #define TRACKER_MOVE_H
 
 #include <AccelStepper.h>
+#include <Preferences.h>
 
 // Definicje stałych i pinów
 // Silnik 1 – Elewacja
@@ -15,9 +16,11 @@
 #define MOTOR2_EN_PIN     5
 
 // Krańcówki
-#define LIMIT_SWITCH_1    15  // Krańcówka elewacji
-#define LIMIT_SWITCH_2    2   // Krańcówka azymutu (zamieniona z GPIO0)
-
+#define LIMIT_SWITCH_1    22  // Krańcówka elewacji
+#define LIMIT_SWITCH_2    23   // Krańcówka azymutu
+// Diody LED
+#define MOVING_AZIMUTH_LED 2 // Pin diody LED ruchu azymutu
+#define MOVING_ELEVATION_LED 15 // Pin diody LED ruchu elewacji
 
 #define MOTOR_STEPS 200
 #define STEPS_PER_REV MOTOR_STEPS
@@ -43,25 +46,18 @@ public:
     float getMinElevation() const;
     void moveTracker(float targetAz, float targetEl);
 
-    // void startMotor1(bool direction);
-    // void stopMotor1();
-    // void moveMotor1();
-
-    // void startMotor2(bool direction);
-    // void stopMotor2();
-    // void moveMotor2();
-
-    // void moveAzimuthContinuous(bool direction);
-    // void moveElevationContinuous(bool direction);
-
 private:
     AccelStepper motor1;
     AccelStepper motor2;
     float currentAzimuth;
     float currentElevation;
     float minElevation;
-
+    bool elevationHomingDone = false;
+    bool azimuthHomingDone = false;
+    Preferences preferences; // Dodane do obsługi pamięci nieulotnej
     float calculateMinElevation();
+    void loadPosition();     // Dodane
+    void savePosition();     // Dodane
 };
 
-#endif
+#endif // TRACKER_MOVE_H

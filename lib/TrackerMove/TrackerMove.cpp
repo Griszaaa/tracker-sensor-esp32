@@ -3,6 +3,8 @@
 #include <Arduino.h>
 #include <math.h>
 
+extern String startupLog; // Dodaj na górze pliku
+
 TrackerMove::TrackerMove()
     : motor1(AccelStepper::DRIVER, MOTOR1_STEP_PIN, MOTOR1_DIR_PIN),
       motor2(AccelStepper::DRIVER, MOTOR2_STEP_PIN, MOTOR2_DIR_PIN),
@@ -13,9 +15,13 @@ void TrackerMove::begin() {
     pinMode(MOTOR2_EN_PIN, OUTPUT);
     pinMode(LIMIT_SWITCH_1, INPUT_PULLUP);
     pinMode(LIMIT_SWITCH_2, INPUT_PULLUP);
+    pinMode(MOVING_AZIMUTH_LED, OUTPUT);
+    pinMode(MOVING_ELEVATION_LED, OUTPUT);
 
     digitalWrite(MOTOR1_EN_PIN, HIGH);
     digitalWrite(MOTOR2_EN_PIN, HIGH);
+    digitalWrite(MOVING_AZIMUTH_LED, HIGH);
+    digitalWrite(MOVING_ELEVATION_LED, HIGH);
 
     motor1.setMaxSpeed(SPEED);
     motor1.setAcceleration(ACCELERATION);
@@ -23,8 +29,9 @@ void TrackerMove::begin() {
     motor2.setAcceleration(ACCELERATION);
 
     minElevation = calculateMinElevation();
-    Logger.print("Obliczona minimalna elewacja: ");
-    Logger.println(String(minElevation));
+    startupLog += "Obliczona minimalna elewacja: " + String(minElevation) + "\n";
+    loadPosition(); // Wczytaj pozycję z pamięci
+    startupLog += "Wczytano pozycję: Azymut = " + String(currentAzimuth) + ", Elewacja = " + String(currentElevation) + "\n";
 }
 
 float TrackerMove::calculateMinElevation() {
@@ -35,6 +42,7 @@ float TrackerMove::calculateMinElevation() {
 
 void TrackerMove::homing() {
     Logger.println("Rozpoczynanie homingu elewacji...");
+    digitalWrite(MOVING_ELEVATION_LED, LOW); // LED ON
     motor1.setSpeed(-SPEED);
     digitalWrite(MOTOR1_EN_PIN, LOW);
     while (digitalRead(LIMIT_SWITCH_1) != LOW) {
@@ -44,9 +52,12 @@ void TrackerMove::homing() {
     digitalWrite(MOTOR1_EN_PIN, HIGH);
     motor1.setCurrentPosition(0);
     currentElevation = 90.0;
+    elevationHomingDone = true;
+    digitalWrite(MOVING_ELEVATION_LED, HIGH); // LED OFF
     Logger.println("Homing elewacji zakończony");
 
     Logger.println("Rozpoczynanie homingu azymutu...");
+    digitalWrite(MOVING_AZIMUTH_LED, LOW); // LED ON
     motor2.setSpeed(-SPEED);
     digitalWrite(MOTOR2_EN_PIN, LOW);
     while (digitalRead(LIMIT_SWITCH_2) != LOW) {
@@ -56,7 +67,11 @@ void TrackerMove::homing() {
     digitalWrite(MOTOR2_EN_PIN, HIGH);
     motor2.setCurrentPosition(0);
     currentAzimuth = 0.0;
+    azimuthHomingDone = true;
+    digitalWrite(MOVING_AZIMUTH_LED, HIGH); // LED OFF
     Logger.println("Homing azymutu zakończony");
+
+    savePosition(); // Zapisz pozycję po homingu
 }
 
 void TrackerMove::moveAzimuth(float targetAz) {
@@ -72,20 +87,41 @@ void TrackerMove::moveAzimuth(float targetAz) {
         Logger.print("°, kroki: ");
         Logger.println(String(steps));
 
+        digitalWrite(MOVING_AZIMUTH_LED, LOW); // LED ON
+
         digitalWrite(MOTOR2_EN_PIN, LOW);
         motor2.move(steps);
 
         while (motor2.distanceToGo() != 0) {
+            if (azimuthHomingDone) {
+                if (abs(motor2.currentPosition()) > 200)
+                    azimuthHomingDone = false;
+            } else {
+                if (digitalRead(LIMIT_SWITCH_2) == LOW) {
+                Logger.println("Osiągnięto krańcówkę azymutu!");
+                motor2.stop();
+                motor2.setCurrentPosition(0);
+                currentAzimuth = 0.0;
+                Logger.println("Panel ustawiony na azymut 0°.");
+                digitalWrite(MOTOR2_EN_PIN, HIGH);
+                break;
+                }
+            }
             motor2.run();
         }
-
+        // Przelicz rzeczywisty kąt na podstawie wykonanych kroków
         float movedDeg = (motor2.currentPosition() * 360.0) / (WORM_GEAR_TEETH * STEPS_PER_REV);
         currentAzimuth = constrain(currentAzimuth + movedDeg, 0.0, MAX_AZIMUTH);
         motor2.setCurrentPosition(0);
         digitalWrite(MOTOR2_EN_PIN, HIGH);
 
+        savePosition(); // Zapisz pozycję po ruchu
+
+        digitalWrite(MOVING_AZIMUTH_LED, HIGH); // LED OFF
+
         Logger.print("Nowy azymut: ");
-        Logger.println(String(currentAzimuth));
+        Logger.print(String(currentAzimuth));
+        Logger.println("°");
     }
 }
 
@@ -110,19 +146,54 @@ void TrackerMove::moveElevation(float targetEl) {
         Logger.print(String(targetLength));
         Logger.println("mm");
 
+        digitalWrite(MOVING_ELEVATION_LED, LOW); // LED ON
+
         digitalWrite(MOTOR1_EN_PIN, LOW);
         motor1.move(steps);
 
         while (motor1.distanceToGo() != 0) {
+            if (elevationHomingDone) {
+                if (abs(motor1.currentPosition()) > 600)
+                    elevationHomingDone = false;
+            } else {
+                if (digitalRead(LIMIT_SWITCH_1) == LOW) {
+                Logger.println("Osiągnięto krańcówkę elewacji!");
+                motor1.stop();
+                motor1.setCurrentPosition(0);
+                currentElevation = 90.0;
+                Logger.println("Panel ustawiony na elewację 90°.");
+                digitalWrite(MOTOR1_EN_PIN, HIGH);
+                break;
+                }
+            }
             motor1.run();
         }
 
         digitalWrite(MOTOR1_EN_PIN, HIGH);
         currentElevation = targetEl;
 
+        savePosition(); // Zapisz pozycję po ruchu
+
+        digitalWrite(MOVING_ELEVATION_LED, HIGH); // LED OFF
+
         Logger.print("Nowa elewacja: ");
-        Logger.println(String(currentElevation));
+        Logger.print(String(currentElevation));
+        Logger.println("°");
     }
+}
+
+void TrackerMove::loadPosition() {
+    preferences.begin("tracker", true); // tryb tylko do odczytu
+    currentAzimuth = preferences.getFloat("azimuth", 0.0f);
+    currentElevation = preferences.getFloat("elevation", 90.0f);
+    preferences.end();
+}
+
+void TrackerMove::savePosition() {
+    preferences.begin("tracker", false); // tryb do zapisu
+    preferences.putFloat("azimuth", currentAzimuth);
+    preferences.putFloat("elevation", currentElevation);
+    preferences.end();
 }
 
 float TrackerMove::getCurrentAzimuth() const {
@@ -149,82 +220,3 @@ void TrackerMove::moveTracker(float targetAz, float targetEl) {
     this->moveAzimuth(targetAz);
     this->moveElevation(targetEl);
 }
-
-
-// void TrackerMove::startMotor1(bool direction) {
-//     if (direction) {
-//         motor1.setSpeed(SPEED);
-//     } else {
-//         motor1.setSpeed(-SPEED);
-//     }
-//     digitalWrite(MOTOR1_EN_PIN, LOW);
-//     // Nie wywołuj runSpeed() tutaj!
-// }
-
-// void TrackerMove::stopMotor1() {
-//     digitalWrite(MOTOR1_EN_PIN, HIGH);
-//     motor1.setSpeed(0);
-// }
-
-// // Wywołuj to cyklicznie w loop()
-// void TrackerMove::moveMotor1() {
-//     if (digitalRead(MOTOR1_EN_PIN) == LOW) {
-//         motor1.runSpeed();
-//     }
-// }
-
-// void TrackerMove::startMotor2(bool direction) {
-//     if (direction) {
-//         motor2.setSpeed(SPEED);
-//     } else {
-//         motor2.setSpeed(-SPEED);
-//     }
-//     digitalWrite(MOTOR2_EN_PIN, LOW);
-//     // Nie wywołuj runSpeed() tutaj!
-// }
-
-// void TrackerMove::stopMotor2() {
-//     digitalWrite(MOTOR2_EN_PIN, HIGH);
-//     motor2.setSpeed(0);
-// }
-// // Wywołuj to cyklicznie w loop()
-// void TrackerMove::moveMotor2() {
-//     if (digitalRead(MOTOR2_EN_PIN) == LOW) {
-//         motor2.runSpeed();
-//     }
-// }
-
-// void TrackerMove::moveAzimuthContinuous(bool direction) {
-//     // Sprawdź limity
-//     if ((direction && currentAzimuth >= MAX_AZIMUTH) ||
-//         (!direction && currentAzimuth <= 0.0)) {
-//         stopMotor2();
-//         return;
-//     }
-//     startMotor2(direction);
-//     // Wywołuj cyklicznie w loop()
-//     if (digitalRead(MOTOR2_EN_PIN) == LOW) {
-//         motor2.runSpeed();
-//         // Aktualizuj szacowany azymut (opcjonalnie, jeśli chcesz mieć aktualny kąt)
-//         currentAzimuth += (direction ? 1 : -1) * (motor2.speed() / (WORM_GEAR_TEETH * STEPS_PER_REV)) * 360.0 / 1000.0;
-//         currentAzimuth = constrain(currentAzimuth, 0.0, MAX_AZIMUTH);
-//     }
-// }
-
-// void TrackerMove::moveElevationContinuous(bool direction) {
-//     // Sprawdź limity
-//     if ((direction && currentElevation >= 90.0) ||
-//         (!direction && currentElevation <= minElevation)) {
-//         stopMotor1();
-//         return;
-//     }
-//     startMotor1(direction);
-//     // Wywołuj cyklicznie w loop()
-//     if (digitalRead(MOTOR1_EN_PIN) == LOW) {
-//         motor1.runSpeed();
-//         // Aktualizuj szacowaną elewację (opcjonalnie, jeśli chcesz mieć aktualny kąt)
-//         currentElevation += (direction ? 1 : -1) * (motor1.speed() / 200.0) * 360.0 / 1000.0;
-//         currentElevation = constrain(currentElevation, minElevation, 90.0);
-//     }
-// }
-
