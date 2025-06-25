@@ -1,7 +1,6 @@
 #include <Arduino.h>
 #include <TrackerMove.h>
 #include <WiFiLogger.h>
-#include <driver/timer.h>
 
 #define SENSOR_NE 33
 #define SENSOR_NW 34
@@ -12,9 +11,7 @@
 
 TrackerMove tracker;
 bool trackingEnabled = false;
-// volatile bool timerFlag = false;
 String startupLog; // Bufor na logi startowe
-
 
 // Deklaracja funkcji
 void sensorRead(int& ne, int& nw, int& se, int& sw);
